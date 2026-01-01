@@ -55,6 +55,12 @@ def check_overlays():
     embers_ok = os.path.exists(EMBERS_OVERLAY)
     print(f"Overlay smoke_gray.mp4: {'✓' if smoke_ok else '✗'} {SMOKE_OVERLAY}")
     print(f"Overlay embers.mp4: {'✓' if embers_ok else '✗'} {EMBERS_OVERLAY}")
+    if smoke_ok:
+        smoke_size = os.path.getsize(SMOKE_OVERLAY)
+        print(f"  smoke_gray.mp4 size: {smoke_size / 1024:.1f} KB")
+    if embers_ok:
+        embers_size = os.path.getsize(EMBERS_OVERLAY)
+        print(f"  embers.mp4 size: {embers_size / 1024:.1f} KB")
     return smoke_ok and embers_ok
 
 # Run startup checks
@@ -351,6 +357,11 @@ def handler(job):
         return {"error": "Supabase credentials required"}
     if len(image_urls) != len(timings):
         return {"error": "Image URLs and timings count mismatch"}
+
+    # Early validation: check overlays if effects requested
+    if apply_effects:
+        if not os.path.exists(SMOKE_OVERLAY) or not os.path.exists(EMBERS_OVERLAY):
+            return {"error": "Overlay files missing - cannot apply effects"}
 
     print(f"Starting video render: {len(image_urls)} images, effects={apply_effects}")
     start_time = time.time()

@@ -11,6 +11,7 @@ import requests
 import time
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Overlay files bundled with the worker
 SMOKE_OVERLAY = "/app/overlays/smoke_gray.mp4"
@@ -260,20 +261,39 @@ def handler(job):
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Download all images
-            image_paths = []
-            for i, url in enumerate(image_urls):
+            # Download all images in parallel (10 concurrent downloads)
+            download_start = time.time()
+            image_paths = [None] * len(image_urls)
+            failed_downloads = []
+
+            def download_image(args):
+                i, url = args
                 ext = '.png' if '.png' in url.lower() else '.jpg'
                 img_path = os.path.join(temp_dir, f"image_{i:03d}{ext}")
-                if not download_file(url, img_path):
-                    return {"error": f"Failed to download image {i}"}
-                image_paths.append(img_path)
+                success = download_file(url, img_path)
+                return i, img_path, success
 
-            print(f"Downloaded {len(image_paths)} images")
+            # Download images in parallel
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(download_image, (i, url)): i
+                          for i, url in enumerate(image_urls)}
 
-            # Download audio
+                for future in as_completed(futures):
+                    i, img_path, success = future.result()
+                    if success:
+                        image_paths[i] = img_path
+                    else:
+                        failed_downloads.append(i)
+
+            if failed_downloads:
+                return {"error": f"Failed to download images: {failed_downloads[:5]}"}
+
+            download_elapsed = time.time() - download_start
+            print(f"Downloaded {len(image_paths)} images in {download_elapsed:.1f}s")
+
+            # Download audio (larger file, keep sequential)
             audio_path = os.path.join(temp_dir, "audio.wav")
-            if not download_file(audio_url, audio_path, timeout=120):
+            if not download_file(audio_url, audio_path, timeout=180):
                 return {"error": "Failed to download audio"}
 
             # Render video

@@ -22,9 +22,13 @@ EMBERS_OVERLAY = "/app/overlays/embers.mp4"
 FFMPEG_PRESET = "p4"  # NVENC preset (p1=fastest, p7=slowest/best quality)
 FFMPEG_CQ = "23"  # Constant quality (lower = better, 18-28 typical)
 
+# Global flag for encoder selection
+USE_NVENC = True
+
 # Check FFmpeg NVENC support on startup
 def check_nvenc():
     """Verify FFmpeg has NVENC support."""
+    global USE_NVENC
     try:
         result = subprocess.run(
             ['ffmpeg', '-hide_banner', '-encoders'],
@@ -32,13 +36,16 @@ def check_nvenc():
         )
         if 'h264_nvenc' in result.stdout:
             print("✓ FFmpeg NVENC support confirmed")
+            USE_NVENC = True
             return True
         else:
-            print("✗ WARNING: h264_nvenc not found in FFmpeg")
+            print("✗ WARNING: h264_nvenc not found, falling back to libx264 (slower)")
             print("Available h264 encoders:", [l for l in result.stdout.split('\n') if 'h264' in l.lower()])
+            USE_NVENC = False
             return False
     except Exception as e:
-        print(f"✗ FFmpeg check failed: {e}")
+        print(f"✗ FFmpeg check failed: {e}, falling back to libx264")
+        USE_NVENC = False
         return False
 
 # Check overlay files exist
@@ -53,6 +60,7 @@ def check_overlays():
 # Run startup checks
 check_nvenc()
 check_overlays()
+print(f"Encoder: {'h264_nvenc (GPU)' if USE_NVENC else 'libx264 (CPU fallback)'}")
 print("=== Worker Ready ===")
 print()
 
@@ -78,12 +86,10 @@ def download_file(url: str, dest_path: str, timeout: int = 60) -> bool:
 
 def upload_to_supabase(file_path: str, bucket: str, storage_path: str,
                        supabase_url: str, supabase_key: str) -> str:
-    """Upload file to Supabase storage and return public URL."""
+    """Upload file to Supabase storage using streaming (memory efficient)."""
     try:
-        print(f"Uploading to Supabase: {storage_path}")
-
-        with open(file_path, 'rb') as f:
-            file_data = f.read()
+        file_size = os.path.getsize(file_path)
+        print(f"Uploading to Supabase: {storage_path} ({file_size / 1024 / 1024:.1f} MB)")
 
         # Supabase storage upload endpoint
         upload_url = f"{supabase_url}/storage/v1/object/{bucket}/{storage_path}"
@@ -91,10 +97,13 @@ def upload_to_supabase(file_path: str, bucket: str, storage_path: str,
         headers = {
             'Authorization': f'Bearer {supabase_key}',
             'Content-Type': 'video/mp4',
-            'x-upsert': 'true'
+            'x-upsert': 'true',
+            'Content-Length': str(file_size)
         }
 
-        response = requests.post(upload_url, headers=headers, data=file_data, timeout=300)
+        # Stream upload to avoid loading entire file into memory
+        with open(file_path, 'rb') as f:
+            response = requests.post(upload_url, headers=headers, data=f, timeout=600)
 
         if response.status_code not in [200, 201]:
             print(f"Upload failed: {response.status_code} - {response.text}")
@@ -172,6 +181,15 @@ def create_concat_file(image_paths: list, timings: list, fps: int = 24) -> str:
     return concat_path
 
 
+def get_encoder_args():
+    """Get encoder-specific FFmpeg arguments."""
+    if USE_NVENC:
+        return ['-c:v', 'h264_nvenc', '-preset', FFMPEG_PRESET, '-cq', FFMPEG_CQ]
+    else:
+        # CPU fallback with libx264
+        return ['-c:v', 'libx264', '-preset', 'fast', '-crf', FFMPEG_CQ]
+
+
 def render_video_gpu(
     image_paths: list,
     timings: list,
@@ -180,7 +198,7 @@ def render_video_gpu(
     apply_effects: bool = True
 ) -> bool:
     """
-    Render video using GPU acceleration (NVENC).
+    Render video using GPU acceleration (NVENC) with CPU fallback.
 
     Args:
         image_paths: List of local image file paths
@@ -192,6 +210,9 @@ def render_video_gpu(
     Returns:
         True if successful
     """
+    encoder_args = get_encoder_args()
+    encoder_name = "NVENC" if USE_NVENC else "libx264"
+
     try:
         # Create concat file for images
         concat_file = create_concat_file(image_paths, timings)
@@ -200,27 +221,25 @@ def render_video_gpu(
             # Two-pass approach: render raw, then apply effects
             # This is more memory efficient than single complex filter
 
-            # Pass 1: Images to raw video (GPU accelerated)
+            # Pass 1: Images to raw video
             raw_video = tempfile.mktemp(suffix='_raw.mp4')
 
             cmd_raw = [
                 'ffmpeg', '-y',
                 '-f', 'concat', '-safe', '0', '-i', concat_file,
                 '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=24',
-                '-c:v', 'h264_nvenc',
-                '-preset', FFMPEG_PRESET,
-                '-cq', FFMPEG_CQ,
+                *encoder_args,
                 '-pix_fmt', 'yuv420p',
                 raw_video
             ]
 
-            print(f"Pass 1: Rendering raw video...")
-            result = subprocess.run(cmd_raw, capture_output=True, text=True, timeout=1800)  # 30 min timeout
+            print(f"Pass 1: Rendering raw video ({encoder_name})...")
+            result = subprocess.run(cmd_raw, capture_output=True, text=True, timeout=3600)  # 60 min timeout
             if result.returncode != 0:
                 print(f"Pass 1 failed: {result.stderr}")
                 raise Exception(f"Raw render failed: {result.stderr[-500:]}")
 
-            # Pass 2: Apply smoke + embers overlay (GPU accelerated)
+            # Pass 2: Apply smoke + embers overlay
             cmd_effects = [
                 'ffmpeg', '-y',
                 '-i', raw_video,
@@ -234,9 +253,7 @@ def render_video_gpu(
                 '[with_smoke][embers]overlay=shortest=1[out]',
                 '-map', '[out]',
                 '-map', '3:a',
-                '-c:v', 'h264_nvenc',
-                '-preset', FFMPEG_PRESET,
-                '-cq', FFMPEG_CQ,
+                *encoder_args,
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 '-b:a', '192k',
@@ -244,8 +261,8 @@ def render_video_gpu(
                 output_path
             ]
 
-            print(f"Pass 2: Applying effects...")
-            result = subprocess.run(cmd_effects, capture_output=True, text=True, timeout=1800)  # 30 min timeout
+            print(f"Pass 2: Applying effects ({encoder_name})...")
+            result = subprocess.run(cmd_effects, capture_output=True, text=True, timeout=3600)  # 60 min timeout
 
             # Cleanup raw video
             if os.path.exists(raw_video):
@@ -262,9 +279,7 @@ def render_video_gpu(
                 '-f', 'concat', '-safe', '0', '-i', concat_file,
                 '-i', audio_path,
                 '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=24',
-                '-c:v', 'h264_nvenc',
-                '-preset', FFMPEG_PRESET,
-                '-cq', FFMPEG_CQ,
+                *encoder_args,
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 '-b:a', '192k',
@@ -272,8 +287,8 @@ def render_video_gpu(
                 output_path
             ]
 
-            print(f"Rendering video without effects...")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30 min timeout
+            print(f"Rendering video without effects ({encoder_name})...")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 60 min timeout
 
             if result.returncode != 0:
                 print(f"Render failed: {result.stderr}")
@@ -289,7 +304,7 @@ def render_video_gpu(
 
     except subprocess.TimeoutExpired:
         print("FFmpeg timeout")
-        raise Exception("Render timed out after 10 minutes")
+        raise Exception("Render timed out after 60 minutes")
     except Exception as e:
         print(f"Render error: {e}")
         raise
@@ -372,9 +387,9 @@ def handler(job):
             download_elapsed = time.time() - download_start
             print(f"Downloaded {len(image_paths)} images in {download_elapsed:.1f}s")
 
-            # Download audio (larger file, keep sequential)
+            # Download audio (larger file, keep sequential, longer timeout)
             audio_path = os.path.join(temp_dir, "audio.wav")
-            if not download_file(audio_url, audio_path, timeout=180):
+            if not download_file(audio_url, audio_path, timeout=300):
                 return {"error": "Failed to download audio"}
 
             # Render video

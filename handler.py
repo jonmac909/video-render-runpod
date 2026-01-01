@@ -75,6 +75,51 @@ def upload_to_supabase(file_path: str, bucket: str, storage_path: str,
         raise
 
 
+def update_render_job(supabase_url: str, supabase_key: str, job_id: str,
+                      status: str, progress: int, message: str,
+                      video_url: str = None, error: str = None) -> bool:
+    """Update render job status in Supabase database."""
+    try:
+        if not job_id:
+            print("No render_job_id provided, skipping status update")
+            return False
+
+        print(f"Updating render job {job_id}: {status} ({progress}%)")
+
+        update_data = {
+            "status": status,
+            "progress": progress,
+            "message": message,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        }
+
+        if video_url:
+            update_data["video_url"] = video_url
+        if error:
+            update_data["error"] = error
+
+        url = f"{supabase_url}/rest/v1/render_jobs?id=eq.{job_id}"
+        headers = {
+            'Authorization': f'Bearer {supabase_key}',
+            'apikey': supabase_key,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal'
+        }
+
+        response = requests.patch(url, headers=headers, json=update_data, timeout=30)
+
+        if response.status_code not in [200, 204]:
+            print(f"Failed to update job status: {response.status_code} - {response.text}")
+            return False
+
+        print(f"Job {job_id} updated successfully")
+        return True
+
+    except Exception as e:
+        print(f"Error updating job status: {e}")
+        return False
+
+
 def create_concat_file(image_paths: list, timings: list, fps: int = 24) -> str:
     """Create FFmpeg concat demuxer file from images with timings."""
     concat_path = tempfile.mktemp(suffix='.txt')
@@ -244,6 +289,7 @@ def handler(job):
     apply_effects = job_input.get("apply_effects", True)
     supabase_url = job_input.get("supabase_url")
     supabase_key = job_input.get("supabase_key")
+    render_job_id = job_input.get("render_job_id")  # Railway job ID for status updates
 
     if not image_urls:
         return {"error": "No image URLs provided"}
@@ -313,6 +359,15 @@ def handler(job):
             elapsed = time.time() - start_time
             print(f"Total time: {elapsed:.1f}s")
 
+            # Update job status in Supabase (so frontend knows it's done even if Railway crashed)
+            update_render_job(
+                supabase_url, supabase_key, render_job_id,
+                status="complete",
+                progress=100,
+                message=f"Video rendered successfully (GPU: {elapsed:.1f}s)",
+                video_url=video_url
+            )
+
             return {
                 "video_url": video_url,
                 "render_time_seconds": elapsed
@@ -320,6 +375,14 @@ def handler(job):
 
     except Exception as e:
         print(f"Handler error: {e}")
+        # Update job status with error
+        update_render_job(
+            supabase_url, supabase_key, render_job_id,
+            status="failed",
+            progress=0,
+            message="GPU render failed",
+            error=str(e)
+        )
         return {"error": str(e)}
 
 

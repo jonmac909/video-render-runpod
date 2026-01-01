@@ -135,7 +135,7 @@ def render_video_gpu(
             ]
 
             print(f"Pass 1: Rendering raw video...")
-            result = subprocess.run(cmd_raw, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd_raw, capture_output=True, text=True, timeout=1800)  # 30 min timeout
             if result.returncode != 0:
                 print(f"Pass 1 failed: {result.stderr}")
                 raise Exception(f"Raw render failed: {result.stderr[-500:]}")
@@ -165,7 +165,7 @@ def render_video_gpu(
             ]
 
             print(f"Pass 2: Applying effects...")
-            result = subprocess.run(cmd_effects, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd_effects, capture_output=True, text=True, timeout=1800)  # 30 min timeout
 
             # Cleanup raw video
             if os.path.exists(raw_video):
@@ -193,7 +193,7 @@ def render_video_gpu(
             ]
 
             print(f"Rendering video without effects...")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30 min timeout
 
             if result.returncode != 0:
                 print(f"Render failed: {result.stderr}")

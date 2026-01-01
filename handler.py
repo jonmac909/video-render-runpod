@@ -9,9 +9,10 @@ import os
 import tempfile
 import requests
 import time
-import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+print("=== Video Render Worker Starting ===")
 
 # Overlay files bundled with the worker
 SMOKE_OVERLAY = "/app/overlays/smoke_gray.mp4"
@@ -20,6 +21,40 @@ EMBERS_OVERLAY = "/app/overlays/embers.mp4"
 # FFmpeg settings
 FFMPEG_PRESET = "p4"  # NVENC preset (p1=fastest, p7=slowest/best quality)
 FFMPEG_CQ = "23"  # Constant quality (lower = better, 18-28 typical)
+
+# Check FFmpeg NVENC support on startup
+def check_nvenc():
+    """Verify FFmpeg has NVENC support."""
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-hide_banner', '-encoders'],
+            capture_output=True, text=True, timeout=10
+        )
+        if 'h264_nvenc' in result.stdout:
+            print("✓ FFmpeg NVENC support confirmed")
+            return True
+        else:
+            print("✗ WARNING: h264_nvenc not found in FFmpeg")
+            print("Available h264 encoders:", [l for l in result.stdout.split('\n') if 'h264' in l.lower()])
+            return False
+    except Exception as e:
+        print(f"✗ FFmpeg check failed: {e}")
+        return False
+
+# Check overlay files exist
+def check_overlays():
+    """Verify overlay files are present."""
+    smoke_ok = os.path.exists(SMOKE_OVERLAY)
+    embers_ok = os.path.exists(EMBERS_OVERLAY)
+    print(f"Overlay smoke_gray.mp4: {'✓' if smoke_ok else '✗'} {SMOKE_OVERLAY}")
+    print(f"Overlay embers.mp4: {'✓' if embers_ok else '✗'} {EMBERS_OVERLAY}")
+    return smoke_ok and embers_ok
+
+# Run startup checks
+check_nvenc()
+check_overlays()
+print("=== Worker Ready ===")
+print()
 
 
 def download_file(url: str, dest_path: str, timeout: int = 60) -> bool:

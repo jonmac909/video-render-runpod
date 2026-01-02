@@ -27,22 +27,42 @@ USE_NVENC = True
 
 # Check FFmpeg NVENC support on startup
 def check_nvenc():
-    """Verify FFmpeg has NVENC support."""
+    """Verify FFmpeg has NVENC support by doing a real test encode."""
     global USE_NVENC
     try:
+        # First check if encoder is listed
         result = subprocess.run(
             ['ffmpeg', '-hide_banner', '-encoders'],
             capture_output=True, text=True, timeout=10
         )
-        if 'h264_nvenc' in result.stdout:
-            print("✓ FFmpeg NVENC support confirmed")
+        if 'h264_nvenc' not in result.stdout:
+            print("✗ WARNING: h264_nvenc not found, falling back to libx264 (slower)")
+            USE_NVENC = False
+            return False
+
+        # Now do a real test encode to verify driver compatibility
+        print("Testing NVENC with real encode...")
+        test_result = subprocess.run(
+            ['ffmpeg', '-y', '-f', 'lavfi', '-i', 'color=black:s=64x64:d=0.1',
+             '-c:v', 'h264_nvenc', '-f', 'null', '-'],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if test_result.returncode == 0:
+            print("✓ FFmpeg NVENC support confirmed (test encode passed)")
             USE_NVENC = True
             return True
         else:
-            print("✗ WARNING: h264_nvenc not found, falling back to libx264 (slower)")
-            print("Available h264 encoders:", [l for l in result.stdout.split('\n') if 'h264' in l.lower()])
+            # Check for specific driver version error
+            if 'Driver does not support' in test_result.stderr or 'nvenc API version' in test_result.stderr:
+                print("✗ NVENC API version mismatch - driver too old for this FFmpeg")
+                print(f"  Error: {[l for l in test_result.stderr.split(chr(10)) if 'nvenc' in l.lower()]}")
+            else:
+                print(f"✗ NVENC test encode failed: {test_result.stderr[-200:]}")
+            print("Falling back to libx264 (CPU)")
             USE_NVENC = False
             return False
+
     except Exception as e:
         print(f"✗ FFmpeg check failed: {e}, falling back to libx264")
         USE_NVENC = False

@@ -15,14 +15,15 @@ RUN apt-get update && apt-get install -y \
     libnuma-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install nv-codec-headers 12.2 (matches RunPod's NVENC API version)
-RUN git clone --branch n12.2.72.0 --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
+# Install nv-codec-headers 12.1 (compatible with driver 530+, covers most RunPod configurations)
+# Note: n12.2 requires driver 550+, n12.1 requires driver 530+ (more compatible)
+RUN git clone --branch n12.1.14.0 --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
     cd nv-codec-headers && \
     make install && \
     cd .. && rm -rf nv-codec-headers
 
 # Build FFmpeg with NVENC support using compatible headers
-# Note: FFmpeg 6.0 is compatible with nv-codec-headers 12.2 (FFmpeg 6.1+ needs newer headers)
+# Note: FFmpeg 6.0 is compatible with nv-codec-headers 12.1 (FFmpeg 6.1 added new NVENC APIs)
 # NVENC encoding only needs nv-codec-headers, not full CUDA toolkit compilation
 RUN git clone --branch n6.0 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
     cd FFmpeg && \

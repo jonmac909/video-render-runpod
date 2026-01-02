@@ -23,13 +23,14 @@ EMBERS_OVERLAY = "/app/overlays/embers.mp4"
 FFMPEG_PRESET = "p2"  # NVENC preset (p1=fastest, p7=slowest/best quality) - p2 is fast with good quality
 FFMPEG_CQ = "24"  # Constant quality (lower = better, 18-28 typical) - 24 is good balance
 
-# Global flag for encoder selection
-USE_NVENC = True
+# Global flag for NVENC availability - worker will FAIL if not available (no CPU fallback)
+NVENC_AVAILABLE = False
+NVENC_ERROR = None
 
 # Check FFmpeg NVENC support on startup
 def check_nvenc():
     """Verify FFmpeg has NVENC support by doing a real test encode."""
-    global USE_NVENC
+    global NVENC_AVAILABLE, NVENC_ERROR
     try:
         # First check if encoder is listed
         result = subprocess.run(
@@ -37,8 +38,9 @@ def check_nvenc():
             capture_output=True, text=True, timeout=10
         )
         if 'h264_nvenc' not in result.stdout:
-            print("✗ WARNING: h264_nvenc not found, falling back to libx264 (slower)")
-            USE_NVENC = False
+            NVENC_ERROR = "h264_nvenc encoder not found in FFmpeg"
+            print(f"✗ FATAL: {NVENC_ERROR}")
+            NVENC_AVAILABLE = False
             return False
 
         # Now do a real test encode to verify driver compatibility
@@ -51,22 +53,25 @@ def check_nvenc():
 
         if test_result.returncode == 0:
             print("✓ FFmpeg NVENC support confirmed (test encode passed)")
-            USE_NVENC = True
+            NVENC_AVAILABLE = True
+            NVENC_ERROR = None
             return True
         else:
             # Check for specific driver version error
             if 'Driver does not support' in test_result.stderr or 'nvenc API version' in test_result.stderr:
-                print("✗ NVENC API version mismatch - driver too old for this FFmpeg")
-                print(f"  Error: {[l for l in test_result.stderr.split(chr(10)) if 'nvenc' in l.lower()]}")
+                NVENC_ERROR = "NVENC API version mismatch - GPU driver incompatible"
+            elif 'No capable devices found' in test_result.stderr or 'capable devices found' in test_result.stderr:
+                NVENC_ERROR = "No NVENC-capable GPU found on this worker"
             else:
-                print(f"✗ NVENC test encode failed: {test_result.stderr[-200:]}")
-            print("Falling back to libx264 (CPU)")
-            USE_NVENC = False
+                NVENC_ERROR = f"NVENC test encode failed: {test_result.stderr[-200:]}"
+            print(f"✗ FATAL: {NVENC_ERROR}")
+            NVENC_AVAILABLE = False
             return False
 
     except Exception as e:
-        print(f"✗ FFmpeg check failed: {e}, falling back to libx264")
-        USE_NVENC = False
+        NVENC_ERROR = f"FFmpeg check failed: {e}"
+        print(f"✗ FATAL: {NVENC_ERROR}")
+        NVENC_AVAILABLE = False
         return False
 
 # Check overlay files exist
@@ -87,7 +92,11 @@ def check_overlays():
 # Run startup checks
 check_nvenc()
 check_overlays()
-print(f"Encoder: {'h264_nvenc (GPU)' if USE_NVENC else 'libx264 (CPU fallback)'}")
+if NVENC_AVAILABLE:
+    print("Encoder: h264_nvenc (GPU) ✓")
+else:
+    print(f"Encoder: NVENC NOT AVAILABLE - jobs will fail immediately")
+    print(f"  Reason: {NVENC_ERROR}")
 print("=== Worker Ready ===")
 print()
 
@@ -248,12 +257,10 @@ def create_concat_file(image_paths: list, timings: list, fps: int = 24) -> str:
 
 
 def get_encoder_args():
-    """Get encoder-specific FFmpeg arguments."""
-    if USE_NVENC:
-        return ['-c:v', 'h264_nvenc', '-preset', FFMPEG_PRESET, '-cq', FFMPEG_CQ]
-    else:
-        # CPU fallback with libx264
-        return ['-c:v', 'libx264', '-preset', 'fast', '-crf', FFMPEG_CQ]
+    """Get NVENC encoder arguments. Raises if NVENC not available."""
+    if not NVENC_AVAILABLE:
+        raise RuntimeError(f"NVENC not available: {NVENC_ERROR}")
+    return ['-c:v', 'h264_nvenc', '-preset', FFMPEG_PRESET, '-cq', FFMPEG_CQ]
 
 
 def render_video_gpu(
@@ -505,12 +512,22 @@ def handler(job):
     if len(image_urls) != len(timings):
         return {"error": "Image URLs and timings count mismatch"}
 
+    # CRITICAL: Fail immediately if NVENC not available (no CPU fallback)
+    if not NVENC_AVAILABLE:
+        error_msg = f"NVENC not available on this worker: {NVENC_ERROR}"
+        print(f"✗ FATAL: {error_msg}")
+        # Update Supabase with failure
+        update_render_job(supabase_url, supabase_key, render_job_id,
+                          status="failed", progress=0, message="Worker lacks GPU encoding",
+                          error=error_msg)
+        return {"error": error_msg}
+
     # Early validation: check overlays if effects requested
     if apply_effects:
         if not os.path.exists(SMOKE_OVERLAY) or not os.path.exists(EMBERS_OVERLAY):
             return {"error": "Overlay files missing - cannot apply effects"}
 
-    print(f"Starting video render: {len(image_urls)} images, effects={apply_effects}")
+    print(f"Starting video render: {len(image_urls)} images, effects={apply_effects}, encoder=h264_nvenc")
     start_time = time.time()
 
     # Create progress callback that updates Supabase

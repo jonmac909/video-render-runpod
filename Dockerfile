@@ -13,16 +13,17 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install nv-codec-headers 11.1 (oldest stable, compatible with driver 470+)
-# This ensures maximum compatibility with any RunPod GPU driver
 RUN git clone --branch n11.1.5.3 --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
     cd nv-codec-headers && \
     make install PREFIX=/usr && \
     cd .. && rm -rf nv-codec-headers
 
-# Verify nv-codec-headers installation
-RUN pkg-config --exists ffnvcodec && pkg-config --modversion ffnvcodec
+# Verify nv-codec-headers and show CUDA paths
+RUN pkg-config --exists ffnvcodec && echo "ffnvcodec version: $(pkg-config --modversion ffnvcodec)" && \
+    echo "CUDA include path: $(ls -la /usr/local/cuda/include/cuda.h 2>/dev/null || echo 'not found')"
 
-# Build FFmpeg 5.1 (stable release compatible with nv-codec-headers 11.x)
+# Build FFmpeg 5.1 with NVENC
+# --extra-cflags includes CUDA headers path for NVENC compilation
 RUN git clone --branch n5.1.4 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
     cd FFmpeg && \
     ./configure \
@@ -32,6 +33,8 @@ RUN git clone --branch n5.1.4 --depth 1 https://github.com/FFmpeg/FFmpeg.git && 
         --enable-nvenc \
         --enable-libx264 \
         --enable-libx265 \
+        --extra-cflags="-I/usr/local/cuda/include" \
+        --extra-ldflags="-L/usr/local/cuda/lib64" \
         --disable-doc \
         --disable-debug \
         --disable-static \

@@ -1,4 +1,4 @@
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install FFmpeg with NVENC support (static build from BtbN)
-# Using latest build - handler.py has CPU fallback if NVENC API version mismatch
+# CUDA 12.1 driver supports NVENC API v12.x which matches latest FFmpeg builds
 RUN wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz && \
     tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz && \
     cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ && \

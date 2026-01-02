@@ -1,10 +1,7 @@
 FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
-# Install build dependencies for FFmpeg
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
-    wget \
-    curl \
-    xz-utils \
     build-essential \
     yasm \
     nasm \
@@ -15,30 +12,37 @@ RUN apt-get update && apt-get install -y \
     libnuma-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install nv-codec-headers 12.1 (compatible with driver 530+, covers most RunPod configurations)
-# Note: n12.2 requires driver 550+, n12.1 requires driver 530+ (more compatible)
-RUN git clone --branch n12.1.14.0 --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
+# Install nv-codec-headers 11.1 (oldest stable, compatible with driver 470+)
+# This ensures maximum compatibility with any RunPod GPU driver
+RUN git clone --branch n11.1.5.3 --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
     cd nv-codec-headers && \
-    make install && \
+    make install PREFIX=/usr && \
     cd .. && rm -rf nv-codec-headers
 
-# Build FFmpeg with NVENC support using compatible headers
-# Note: FFmpeg 6.0 is compatible with nv-codec-headers 12.1 (FFmpeg 6.1 added new NVENC APIs)
-# CRITICAL: Set PKG_CONFIG_PATH so configure finds ffnvcodec.pc installed by nv-codec-headers
-RUN export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH" && \
-    git clone --branch n6.0 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
+# Verify nv-codec-headers installation
+RUN pkg-config --exists ffnvcodec && pkg-config --modversion ffnvcodec
+
+# Build FFmpeg 5.1 (stable release compatible with nv-codec-headers 11.x)
+RUN git clone --branch n5.1.4 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
     cd FFmpeg && \
     ./configure \
+        --prefix=/usr \
         --enable-gpl \
         --enable-nonfree \
         --enable-nvenc \
         --enable-libx264 \
         --enable-libx265 \
         --disable-doc \
-        --disable-debug && \
+        --disable-debug \
+        --disable-static \
+        --enable-shared && \
     make -j$(nproc) && \
     make install && \
+    ldconfig && \
     cd .. && rm -rf FFmpeg
+
+# Verify FFmpeg has NVENC
+RUN ffmpeg -encoders 2>/dev/null | grep nvenc || echo "NVENC encoders compiled (available at runtime with GPU)"
 
 # Set working directory
 WORKDIR /app

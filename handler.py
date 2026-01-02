@@ -19,8 +19,8 @@ SMOKE_OVERLAY = "/app/overlays/smoke_gray.mp4"
 EMBERS_OVERLAY = "/app/overlays/embers.mp4"
 
 # FFmpeg settings
-FFMPEG_PRESET = "p4"  # NVENC preset (p1=fastest, p7=slowest/best quality)
-FFMPEG_CQ = "23"  # Constant quality (lower = better, 18-28 typical)
+FFMPEG_PRESET = "p2"  # NVENC preset (p1=fastest, p7=slowest/best quality) - p2 is fast with good quality
+FFMPEG_CQ = "24"  # Constant quality (lower = better, 18-28 typical) - 24 is good balance
 
 # Global flag for encoder selection
 USE_NVENC = True
@@ -368,7 +368,7 @@ def handler(job):
 
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Download all images in parallel (10 concurrent downloads)
+            # Download all images in parallel (20 concurrent downloads)
             download_start = time.time()
             image_paths = [None] * len(image_urls)
             failed_downloads = []
@@ -381,7 +381,7 @@ def handler(job):
                 return i, img_path, success
 
             # Download images in parallel
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=20) as executor:
                 futures = {executor.submit(download_image, (i, url)): i
                           for i, url in enumerate(image_urls)}
 

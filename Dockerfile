@@ -1,20 +1,46 @@
 FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
-# Install dependencies
+# Install build dependencies for FFmpeg
 RUN apt-get update && apt-get install -y \
     wget \
     curl \
     xz-utils \
+    build-essential \
+    yasm \
+    nasm \
+    pkg-config \
+    git \
+    libx264-dev \
+    libx265-dev \
+    libnuma-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install FFmpeg with NVENC support (static build from BtbN)
-# CUDA 12.1 driver supports NVENC API v12.x which matches latest FFmpeg builds
-RUN wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz && \
-    tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz && \
-    cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ && \
-    cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ && \
-    rm -rf ffmpeg-master-latest-linux64-gpl* && \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+# Install nv-codec-headers 12.2 (matches RunPod's NVENC API version)
+RUN git clone --branch n12.2.72.0 --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
+    cd nv-codec-headers && \
+    make install && \
+    cd .. && rm -rf nv-codec-headers
+
+# Build FFmpeg with NVENC support using compatible headers
+RUN git clone --branch n6.1 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
+    cd FFmpeg && \
+    ./configure \
+        --enable-gpl \
+        --enable-nonfree \
+        --enable-cuda-nvcc \
+        --enable-libnpp \
+        --enable-nvenc \
+        --enable-nvdec \
+        --enable-cuvid \
+        --enable-libx264 \
+        --enable-libx265 \
+        --extra-cflags="-I/usr/local/cuda/include" \
+        --extra-ldflags="-L/usr/local/cuda/lib64" \
+        --disable-doc \
+        --disable-debug && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf FFmpeg
 
 # Set working directory
 WORKDIR /app

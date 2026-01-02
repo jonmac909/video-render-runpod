@@ -22,9 +22,9 @@ RUN git clone --branch n12.2.72.0 --depth 1 https://github.com/FFmpeg/nv-codec-h
     cd .. && rm -rf nv-codec-headers
 
 # Build FFmpeg with NVENC support using compatible headers
-# Note: We only enable nvenc (not cuda-nvcc/libnpp) - those require nvcc compiler setup
+# Note: FFmpeg 6.0 is compatible with nv-codec-headers 12.2 (FFmpeg 6.1+ needs newer headers)
 # NVENC encoding only needs nv-codec-headers, not full CUDA toolkit compilation
-RUN git clone --branch n6.1 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
+RUN git clone --branch n6.0 --depth 1 https://github.com/FFmpeg/FFmpeg.git && \
     cd FFmpeg && \
     ./configure \
         --enable-gpl \

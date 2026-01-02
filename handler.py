@@ -9,6 +9,7 @@ import os
 import tempfile
 import requests
 import time
+import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -89,6 +90,45 @@ check_overlays()
 print(f"Encoder: {'h264_nvenc (GPU)' if USE_NVENC else 'libx264 (CPU fallback)'}")
 print("=== Worker Ready ===")
 print()
+
+
+def get_audio_duration(audio_path: str) -> float:
+    """Get audio duration in seconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'csv=p=0', audio_path],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except Exception as e:
+        print(f"Failed to get audio duration: {e}")
+    return 0.0
+
+
+def parse_ffmpeg_progress(line: str, total_duration: float) -> float:
+    """
+    Parse FFmpeg progress line and return percentage (0-100).
+
+    FFmpeg outputs lines like:
+    frame=  123 fps=30 q=28.0 size=    1234kB time=00:00:05.12 bitrate=1234.5kbits/s speed=1.5x
+    """
+    if total_duration <= 0:
+        return 0.0
+
+    # Parse time=HH:MM:SS.ms format
+    match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d+)', line)
+    if match:
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = int(match.group(3))
+        ms = int(match.group(4)[:2]) / 100  # Take first 2 digits as fraction
+        current_time = hours * 3600 + minutes * 60 + seconds + ms
+        progress = (current_time / total_duration) * 100
+        return min(progress, 100.0)
+
+    return 0.0
 
 
 def download_file(url: str, dest_path: str, timeout: int = 60) -> bool:
@@ -221,7 +261,8 @@ def render_video_gpu(
     timings: list,
     audio_path: str,
     output_path: str,
-    apply_effects: bool = True
+    apply_effects: bool = True,
+    progress_callback=None
 ) -> bool:
     """
     Render video using GPU acceleration (NVENC) with CPU fallback.
@@ -232,12 +273,23 @@ def render_video_gpu(
         audio_path: Local path to audio file
         output_path: Output video path
         apply_effects: Whether to apply smoke + embers overlay
+        progress_callback: Optional callback(stage, percent, message) for progress updates
 
     Returns:
         True if successful
     """
     encoder_args = get_encoder_args()
     encoder_name = "NVENC" if USE_NVENC else "libx264"
+
+    # Get total duration for progress calculation
+    total_duration = get_audio_duration(audio_path)
+    print(f"Total audio duration: {total_duration:.1f}s")
+
+    # Helper to send progress updates
+    def send_progress(stage: str, percent: float, message: str):
+        if progress_callback:
+            progress_callback(stage, percent, message)
+        print(f"[{stage}] {percent:.1f}% - {message}")
 
     try:
         # Create concat file for images
@@ -261,6 +313,7 @@ def render_video_gpu(
 
             print(f"Pass 1: Rendering raw video ({encoder_name})...")
             print(f"FFmpeg command: {' '.join(cmd_raw[:10])}...")
+            send_progress("rendering", 25, "Pass 1: Rendering raw video...")
 
             # Run FFmpeg with real-time output
             process = subprocess.Popen(
@@ -273,12 +326,25 @@ def render_video_gpu(
 
             ffmpeg_output = []
             last_progress_time = time.time()
+            last_progress_update = 0
             for line in process.stdout:
                 ffmpeg_output.append(line)
                 # Print progress lines (contain 'frame=' or 'time=')
                 if 'frame=' in line or 'time=' in line or 'error' in line.lower():
                     print(f"  {line.strip()}")
                     last_progress_time = time.time()
+
+                    # Parse and send progress (Pass 1 = 25-50% overall)
+                    if 'time=' in line and total_duration > 0:
+                        ffmpeg_pct = parse_ffmpeg_progress(line, total_duration)
+                        # Map 0-100% of Pass 1 to 25-50% overall
+                        overall_pct = 25 + (ffmpeg_pct * 0.25)
+                        # Throttle updates to every 2 seconds
+                        now = time.time()
+                        if now - last_progress_update >= 2:
+                            last_progress_update = now
+                            send_progress("rendering", overall_pct, f"Pass 1: {ffmpeg_pct:.0f}%")
+
                 # Print periodic status even if no progress
                 elif time.time() - last_progress_time > 30:
                     print(f"  Still rendering... (last: {line.strip()[:80]})")
@@ -314,6 +380,7 @@ def render_video_gpu(
 
             print(f"Pass 2: Applying effects ({encoder_name})...")
             print(f"FFmpeg command: {' '.join(cmd_effects[:10])}...")
+            send_progress("rendering", 50, "Pass 2: Applying smoke + embers...")
 
             # Run FFmpeg with real-time output
             process = subprocess.Popen(
@@ -326,11 +393,23 @@ def render_video_gpu(
 
             ffmpeg_output = []
             last_progress_time = time.time()
+            last_progress_update = 0
             for line in process.stdout:
                 ffmpeg_output.append(line)
                 if 'frame=' in line or 'time=' in line or 'error' in line.lower():
                     print(f"  {line.strip()}")
                     last_progress_time = time.time()
+
+                    # Parse and send progress (Pass 2 = 50-85% overall)
+                    if 'time=' in line and total_duration > 0:
+                        ffmpeg_pct = parse_ffmpeg_progress(line, total_duration)
+                        # Map 0-100% of Pass 2 to 50-85% overall
+                        overall_pct = 50 + (ffmpeg_pct * 0.35)
+                        now = time.time()
+                        if now - last_progress_update >= 2:
+                            last_progress_update = now
+                            send_progress("rendering", overall_pct, f"Pass 2: {ffmpeg_pct:.0f}%")
+
                 elif time.time() - last_progress_time > 30:
                     print(f"  Still rendering... (last: {line.strip()[:80]})")
                     last_progress_time = time.time()
@@ -434,8 +513,26 @@ def handler(job):
     print(f"Starting video render: {len(image_urls)} images, effects={apply_effects}")
     start_time = time.time()
 
+    # Create progress callback that updates Supabase
+    last_supabase_update = [0]  # Use list for mutable closure
+    def progress_callback(stage: str, percent: float, message: str):
+        """Send progress updates to Supabase (throttled to every 2s)."""
+        now = time.time()
+        if now - last_supabase_update[0] >= 2:
+            last_supabase_update[0] = now
+            update_render_job(
+                supabase_url, supabase_key, render_job_id,
+                status="rendering",
+                progress=int(percent),
+                message=message
+            )
+
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
+            # Update: Starting downloads
+            update_render_job(supabase_url, supabase_key, render_job_id,
+                              status="downloading", progress=5, message="Downloading assets...")
+
             # Download all images in parallel (20 concurrent downloads)
             download_start = time.time()
             image_paths = [None] * len(image_urls)
@@ -448,17 +545,25 @@ def handler(job):
                 success = download_file(url, img_path)
                 return i, img_path, success
 
-            # Download images in parallel
+            # Download images in parallel with progress updates
             with ThreadPoolExecutor(max_workers=20) as executor:
                 futures = {executor.submit(download_image, (i, url)): i
                           for i, url in enumerate(image_urls)}
 
+                completed_count = 0
                 for future in as_completed(futures):
                     i, img_path, success = future.result()
                     if success:
                         image_paths[i] = img_path
                     else:
                         failed_downloads.append(i)
+                    completed_count += 1
+                    # Update progress every 10 images
+                    if completed_count % 10 == 0:
+                        dl_pct = 5 + int((completed_count / len(image_urls)) * 15)  # 5-20%
+                        update_render_job(supabase_url, supabase_key, render_job_id,
+                                          status="downloading", progress=dl_pct,
+                                          message=f"Downloaded {completed_count}/{len(image_urls)} images")
 
             if failed_downloads:
                 return {"error": f"Failed to download images: {failed_downloads[:5]}"}
@@ -467,15 +572,22 @@ def handler(job):
             print(f"Downloaded {len(image_paths)} images in {download_elapsed:.1f}s")
 
             # Download audio (larger file, keep sequential, longer timeout)
+            update_render_job(supabase_url, supabase_key, render_job_id,
+                              status="downloading", progress=22, message="Downloading audio...")
             audio_path = os.path.join(temp_dir, "audio.wav")
             if not download_file(audio_url, audio_path, timeout=300):
                 return {"error": "Failed to download audio"}
 
-            # Render video
+            # Render video with progress callback
+            update_render_job(supabase_url, supabase_key, render_job_id,
+                              status="rendering", progress=25, message="Starting video render...")
             output_path = os.path.join(temp_dir, "output.mp4")
-            render_video_gpu(image_paths, timings, audio_path, output_path, apply_effects)
+            render_video_gpu(image_paths, timings, audio_path, output_path, apply_effects,
+                             progress_callback=progress_callback)
 
             # Upload to Supabase
+            update_render_job(supabase_url, supabase_key, render_job_id,
+                              status="uploading", progress=88, message="Uploading video...")
             storage_path = f"{project_id}/video.mp4"
             video_url = upload_to_supabase(
                 output_path,

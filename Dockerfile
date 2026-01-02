@@ -8,12 +8,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install FFmpeg with NVENC support (static build from BtbN)
-# Using autobuild-2024-01-31 which is compatible with CUDA 11.8 driver's NVENC API
-RUN wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2024-01-31-12-49/ffmpeg-n6.1.1-linux64-gpl-6.1.tar.xz && \
-    tar -xf ffmpeg-n6.1.1-linux64-gpl-6.1.tar.xz && \
-    cp ffmpeg-n6.1.1-linux64-gpl-6.1/bin/ffmpeg /usr/local/bin/ && \
-    cp ffmpeg-n6.1.1-linux64-gpl-6.1/bin/ffprobe /usr/local/bin/ && \
-    rm -rf ffmpeg-n6.1.1-linux64-gpl-6.1* && \
+# Using latest build - handler.py has CPU fallback if NVENC API version mismatch
+RUN wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz && \
+    tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz && \
+    cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ && \
+    cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ && \
+    rm -rf ffmpeg-master-latest-linux64-gpl* && \
     chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
 # Set working directory

@@ -240,10 +240,35 @@ def render_video_gpu(
             ]
 
             print(f"Pass 1: Rendering raw video ({encoder_name})...")
-            result = subprocess.run(cmd_raw, capture_output=True, text=True, timeout=3600)  # 60 min timeout
-            if result.returncode != 0:
-                print(f"Pass 1 failed: {result.stderr}")
-                raise Exception(f"Raw render failed: {result.stderr[-500:]}")
+            print(f"FFmpeg command: {' '.join(cmd_raw[:10])}...")
+
+            # Run FFmpeg with real-time output
+            process = subprocess.Popen(
+                cmd_raw,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            ffmpeg_output = []
+            last_progress_time = time.time()
+            for line in process.stdout:
+                ffmpeg_output.append(line)
+                # Print progress lines (contain 'frame=' or 'time=')
+                if 'frame=' in line or 'time=' in line or 'error' in line.lower():
+                    print(f"  {line.strip()}")
+                    last_progress_time = time.time()
+                # Print periodic status even if no progress
+                elif time.time() - last_progress_time > 30:
+                    print(f"  Still rendering... (last: {line.strip()[:80]})")
+                    last_progress_time = time.time()
+
+            process.wait(timeout=3600)
+            if process.returncode != 0:
+                error_output = ''.join(ffmpeg_output[-20:])
+                print(f"Pass 1 failed: {error_output}")
+                raise Exception(f"Raw render failed: {error_output[-500:]}")
 
             # Pass 2: Apply smoke + embers overlay
             cmd_effects = [
@@ -268,15 +293,38 @@ def render_video_gpu(
             ]
 
             print(f"Pass 2: Applying effects ({encoder_name})...")
-            result = subprocess.run(cmd_effects, capture_output=True, text=True, timeout=3600)  # 60 min timeout
+            print(f"FFmpeg command: {' '.join(cmd_effects[:10])}...")
+
+            # Run FFmpeg with real-time output
+            process = subprocess.Popen(
+                cmd_effects,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            ffmpeg_output = []
+            last_progress_time = time.time()
+            for line in process.stdout:
+                ffmpeg_output.append(line)
+                if 'frame=' in line or 'time=' in line or 'error' in line.lower():
+                    print(f"  {line.strip()}")
+                    last_progress_time = time.time()
+                elif time.time() - last_progress_time > 30:
+                    print(f"  Still rendering... (last: {line.strip()[:80]})")
+                    last_progress_time = time.time()
+
+            process.wait(timeout=3600)
 
             # Cleanup raw video
             if os.path.exists(raw_video):
                 os.remove(raw_video)
 
-            if result.returncode != 0:
-                print(f"Pass 2 failed: {result.stderr}")
-                raise Exception(f"Effects render failed: {result.stderr[-500:]}")
+            if process.returncode != 0:
+                error_output = ''.join(ffmpeg_output[-20:])
+                print(f"Pass 2 failed: {error_output}")
+                raise Exception(f"Effects render failed: {error_output[-500:]}")
 
         else:
             # No effects - single pass with audio
